@@ -1,0 +1,38 @@
+runpod_worker_comfy:
+  base_path: /runpod-volume
+
+  checkpoints: models/checkpoints/
+
+  clip: models/clip/
+  clip_vision: models/clip_vision/
+
+  configs: models/configs/
+
+  controlnet: models/controlnet/
+
+  diffusion_models: models/diffusion_models/
+  unet: models/unet/
+
+  text_encoders: models/text_encoders/
+
+  vae: models/vae/
+  vae_approx: models/vae_approx/
+
+  loras: models/loras/
+
+  embeddings: models/embeddings/
+
+  upscale_models: models/upscale_models/
+
+  # Native MiniMax H3 Fun ControlNet patches
+  model_patches: models/model_patches/
+
+  # MiniMax H3 latent upscaler
+  latent_upscale_models: models/latent_upscale_models/
+
+  # Optional image-studio / face-refinement components
+  sams: models/sams/
+  ultralytics: models/ultralytics/
+
+  # Optional H3 Studio PDD support
+  pdd_heads: models/pdd_heads/
