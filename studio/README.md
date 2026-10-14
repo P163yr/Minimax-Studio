@@ -30,5 +30,6 @@ See each tool's Workflow details for source-backed node references, model pairin
 
 ## Sampling profiles
 
-pDMD is built in for FL2VA: Euler/simple4 steps, shifts12/3, strength1, no CFG and standard attention for INT8. The user-provided mini-fast I2V recipe is an adaptation; REF2VA is excluded. FL2V4-step768p uses Euler/simple and shifts6/3. REF2V4-step uses Euler/simple and shifts12/3. FL2V8-step follows the mini-fast res_multistep/simple recipe. All presets and feature notes link to original requests and upstream sources.
+pDMD is the default Speed LoRA for all FL2VA tools, including still outputs. The matching REF2VA Turbo adapter remains the default for reference tools. Feature and Speed LoRAs are both enabled when selecting a tool; either can be disabled. Existing saved FL2VA defaults migrate to pDMD once, and later user edits are retained.
 
+pDMD uses Euler/simple4 steps, shifts12/3, strength1, no CFG and standard attention for INT8. The user-provided mini-fast I2V recipe is an adaptation; REF2VA is excluded. FL2V4-step768p uses Euler/simple and shifts6/3. REF2V4-step uses Euler/simple and shifts12/3. FL2V8-step follows the mini-fast res_multistep/simple recipe. All presets and feature notes link to original requests and upstream sources.

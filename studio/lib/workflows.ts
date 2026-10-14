@@ -35,6 +35,8 @@ export interface BuildConfig {
   };
 }
 export interface RunpodRequest { input: { workflow: Workflow; files: MediaFile[]; parameters: {seed:number;duration_seconds:number;fps:24;steps:number} } }
+export const PDMD_LORA = "minimax_h3_pdmd_4nfe_comfyui_v6.safetensors";
+export const FL2VA_TURBO8_LORA = "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors";
 export const DEFAULT_MODELS = {
   fl2va: "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
   ref2va: "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
@@ -42,10 +44,9 @@ export const DEFAULT_MODELS = {
   clip: "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
   videoVae: "minimax_h3_video_vae_int8_convrot.safetensors",
   audioVae: "minimax_h3_audio_vae_fp32.safetensors",
-  fl2vaLora: "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+  fl2vaLora: PDMD_LORA,
   ref2vaLora: "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
 };
-export const PDMD_LORA = "minimax_h3_pdmd_4nfe_comfyui_v6.safetensors";
 export const PDMD_PROFILE = {
   id:"pdmd-4", name:"pDMD · 4 steps", steps:4, sampler:"euler", scheduler:"simple",
   shiftVideo:12, shiftAudio:3, loraStrength:1, denoise:1, attention:"pytorch attention",
@@ -108,7 +109,7 @@ export function getSamplingProfile(lora: string | undefined, family: ModelFamily
   const shared={shiftAudio:3,loraStrength:1,denoise:1,fixed:false,scheduler:"simple"};
   if(filename === DEFAULT_MODELS.ref2vaLora) return {...shared,id:"ref2va-turbo-4",name:"REF2VA Turbo · 4 steps",steps:4,sampler:"euler",shiftVideo:12,modelFamily:"ref2va",notes:["The adapter author's reference graph uses Euler / simple, 4 steps and shifts 12/3. Use match reference sizing to follow its training policy."],sources:[TURBO,REFERENCE]};
   if(filename === "minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors") return {...shared,id:"fl2va-turbo-4-768p",name:"FL2VA 768p Turbo · 4 steps",steps:4,sampler:"euler",shiftVideo:6,modelFamily:"fl2va",notes:["The 768p 4-step adapter was trained with video shift 6, audio shift 3; it needs that model-sampling patch rather than the base 12/3 shift."],sources:[TURBO,I2V]};
-  if(filename === DEFAULT_MODELS.fl2vaLora) return {...shared,id:"fl2va-turbo-8",name:"FL2VA Turbo · 8 steps",steps:8,sampler:"res_multistep",shiftVideo:12,modelFamily:"fl2va",notes:["Matches your working mini-fast 8-step res_multistep / simple graph. The adapter author's Euler / simple alternative is available with an explicit sampler override."],sources:[{title:"Your working FL2VA 8-step graph",url:"https://github.com/P163yr/mini-fast/blob/main/Step%208%20T2V.txt"},TURBO,T2V]};
+  if(filename === FL2VA_TURBO8_LORA) return {...shared,id:"fl2va-turbo-8",name:"FL2VA Turbo · 8 steps",steps:8,sampler:"res_multistep",shiftVideo:12,modelFamily:"fl2va",notes:["Matches your working mini-fast 8-step res_multistep / simple graph. The adapter author's Euler / simple alternative is available with an explicit sampler override."],sources:[{title:"Your working FL2VA 8-step graph",url:"https://github.com/P163yr/mini-fast/blob/main/Step%208%20T2V.txt"},TURBO,T2V]};
   return {...shared,id:"base",name:"Base model · 20 steps",steps:20,sampler:"res_multistep",shiftVideo:12,modelFamily:"any",notes:["Official ComfyUI base workflow: res_multistep / simple at 20 steps. Reference-heavy scenes can use 25 steps for fidelity."],sources:[T2V,REFERENCE]};
 }
 export function recommendedSteps(lora: string | undefined, family: ModelFamily = "fl2va"): number {
@@ -188,7 +189,7 @@ export function buildRequest(config: BuildConfig): RunpodRequest {
   safetensors(model,"Diffusion model");
   if(selected.modelFamily === "ref2va" && /fl2v/i.test(model)) throw new Error("This feature requires REF2VA weights. FL2VA weights are for text and keyframe generation.");
   if(selected.modelFamily === "fl2va" && /ref2v/i.test(model)) throw new Error("This feature requires FL2VA weights. REF2VA weights are for reference conditioning.");
-  const lora = config.lora ?? (selected.output === "image" ? "" : selected.modelFamily === "fl2va" ? DEFAULT_MODELS.fl2vaLora : DEFAULT_MODELS.ref2vaLora);
+  const lora = config.lora ?? (selected.modelFamily === "fl2va" ? DEFAULT_MODELS.fl2vaLora : DEFAULT_MODELS.ref2vaLora);
   const recommendedFeature=getRecommendedFeatureLora(selected.id);
   const featureLora=extras.featureLora ?? (recommendedFeature ? {name:recommendedFeature.name,strength:recommendedFeature.strength,enabled:true} : undefined);
   const featureMetadata=featureLora?.enabled ? getFeatureLoraMetadata(featureLora.name) : null;
@@ -197,7 +198,7 @@ export function buildRequest(config: BuildConfig): RunpodRequest {
   const candidates=[...(lora ? [{name:lora,strength:extras.loraStrength ?? 1,role:"speed"}] : []),...(featureLora?.enabled ? [{name:featureLora.name,strength:featureLora.strength,role:"feature"}] : []),...(extras.loras || []).map(adapter=>({...adapter,role:"extra"}))];
   // Keep the explicit Feature / Speed selection authoritative if an extra repeats it.
   const loras=candidates.filter((adapter,index)=>candidates.findIndex(item=>item.name === adapter.name) === index);
-  const distillationFiles=new Set([PDMD_LORA,DEFAULT_MODELS.fl2vaLora,DEFAULT_MODELS.ref2vaLora,"minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"]);
+  const distillationFiles=new Set([PDMD_LORA,FL2VA_TURBO8_LORA,DEFAULT_MODELS.ref2vaLora,"minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"]);
   if(new Set(loras.filter(adapter=>distillationFiles.has(adapter.name)).map(adapter=>adapter.name)).size > 1) throw new Error("Use one sampling adapter: pDMD or one Turbo LoRA. Creative adapters may be added separately.");
   const isPdmd=loras.some(adapter=>adapter.name === PDMD_LORA);
   if(isPdmd && selected.modelFamily === "ref2va") throw new Error("pDMD supports the base FL2VA / text-to-video transformer. REF2VA needs its matching reference Turbo adapter or base sampling.");
@@ -338,4 +339,3 @@ export function buildRequest(config: BuildConfig): RunpodRequest {
   // even for API graphs. Explicit parameters preserve the authored graph.
   return {input:{workflow,files:handlerFiles,parameters:{seed:config.seed,duration_seconds:selected.id === "extend-video" ? config.duration + 39/24 : config.duration,fps:24,steps:effectiveSteps}}};
 }
-

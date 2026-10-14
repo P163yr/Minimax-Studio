@@ -14,7 +14,7 @@ await writeFile(generatedPath,compiled);
 const inventorySource=await readFile(new URL("../lib/inventory.ts",import.meta.url),"utf8");
 await writeFile(path.join(testDir,"inventory.mjs"),ts.transpileModule(inventorySource,{compilerOptions:{module:ts.ModuleKind.ES2022,target:ts.ScriptTarget.ES2022}}).outputText);
 const {getRecommendedFeatureLora,getCompatibleFeatureLoras,getFeatureLoraMetadata}=await import(pathToFileURL(path.join(testDir,"inventory.mjs")).href);
-const {buildRequest,FEATURES,DEFAULT_MODELS,PDMD_LORA,PDMD_PROFILE,framesForDuration,dimensionsForRatio,recommendedSteps,getSamplingProfile} = await import(pathToFileURL(generatedPath).href);
+const {buildRequest,FEATURES,DEFAULT_MODELS,FL2VA_TURBO8_LORA,PDMD_LORA,PDMD_PROFILE,framesForDuration,dimensionsForRatio,recommendedSteps,getSamplingProfile} = await import(pathToFileURL(generatedPath).href);
 const config = {feature:"text-to-video",prompt:"A kite over a bright seaside, with surf and wind.",duration:5,aspectRatio:"16:9",megapixels:1,seed:757358688076805,steps:8};
 const upload=(role,kind="image",name="reference.png")=>({role,name,mime_type:`${kind}/${kind === "image" ? "png" : kind === "video" ? "mp4" : "wav"}`,data:"dGVzdA==",...(kind === "video" ? {duration:3,hasAudio:true} : kind === "audio" ? {duration:3} : {})});
 const allRequests=new Map();
@@ -89,12 +89,14 @@ const defaultReference=buildRequest({...config,feature:"reference-to-video",step
 assert.equal(defaultReference["1"].inputs.unet_name,DEFAULT_MODELS.ref2va);
 assert.equal(defaultReference["1b"].inputs.lora_name,DEFAULT_MODELS.ref2vaLora);
 assert.equal(recommendedSteps(undefined,"ref2va"),4);
-assert.equal(recommendedSteps(undefined,"fl2va"),8);
+assert.equal(DEFAULT_MODELS.fl2vaLora,PDMD_LORA);
+assert.equal(recommendedSteps(undefined,"fl2va"),4);
+assert.equal(recommendedSteps(FL2VA_TURBO8_LORA,"fl2va"),8,"8-step Turbo remains an optional profile");
 assert.equal(recommendedSteps("minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"),4);
 assert.equal(recommendedSteps(""),20);
 assert.equal(recommendedSteps(PDMD_LORA),4);
-const stacked=buildRequest({...config,extras:{loras:[{name:"better_motion_h3_lora_v1_500.safetensors",strength:0.8}]}}).input.workflow;
-assert.equal(stacked["1b"].inputs.lora_name,DEFAULT_MODELS.fl2vaLora);
+const stacked=buildRequest({...config,lora:FL2VA_TURBO8_LORA,extras:{loras:[{name:"better_motion_h3_lora_v1_500.safetensors",strength:0.8}]}}).input.workflow;
+assert.equal(stacked["1b"].inputs.lora_name,FL2VA_TURBO8_LORA);
 const [stackedExtraId,stackedExtra]=Object.entries(stacked).find(([,node])=>node.class_type === "LoraLoaderModelOnly" && node.inputs.lora_name === "better_motion_h3_lora_v1_500.safetensors");
 assert.deepEqual(stackedExtra.inputs.model,["feature-lora",0]);
 assert.deepEqual(stacked["feature-lora"].inputs.model,["1b",0]);
@@ -146,7 +148,7 @@ for(const feature of FEATURES) {
     allRequests.set(`${feature.id}-pdmd`,variant);
   }
 }
-assert.throws(()=>buildRequest({...config,lora:PDMD_LORA,extras:{loras:[{name:DEFAULT_MODELS.fl2vaLora,strength:1}]}}),/one sampling adapter/);
+assert.throws(()=>buildRequest({...config,lora:PDMD_LORA,extras:{loras:[{name:FL2VA_TURBO8_LORA,strength:1}]}}),/one sampling adapter/);
 const control=allRequests.get("union-controlnet").input.workflow;
 assert.equal(control["control-model"].inputs.name,"minimax_h3_fun_controlnet_union_2.0_pruned_int8_convrot.safetensors");
 assert.equal(control["control-apply"].class_type,"MiniMaxH3FunControlNetApply");
@@ -180,9 +182,11 @@ for(const feature of FEATURES) {
   const files=feature.media.filter(slot=>slot.required).map(slot=>upload(slot.role,slot.kind));
   if(feature.id === "reference-to-video") files.push(upload("reference_image"));
   const speed=feature.modelFamily === "ref2va" ? DEFAULT_MODELS.ref2vaLora : DEFAULT_MODELS.fl2vaLora;
-  const both=buildRequest({...config,feature:feature.id,lora:speed,files});
+  const both=buildRequest({...config,feature:feature.id,steps:recommendedSteps(speed,feature.modelFamily),files});
   const adapters=Object.values(both.input.workflow).filter(node=>node.class_type === "LoraLoaderModelOnly").map(node=>node.inputs.lora_name);
   assert.ok(adapters.includes(speed),`${feature.id}: Speed enabled`);
+  assert.equal(both.input.workflow["8"].inputs.steps,4,`${feature.id}: default four-step Speed profile`);
+  if(feature.modelFamily === "fl2va") assert.equal(both.input.workflow["1b"].inputs.lora_name,PDMD_LORA,`${feature.id}: pDMD is the default, including still outputs`);
   assert.ok(adapters.includes(recommendation.name),`${feature.id}: Feature enabled`);
   assert.equal(adapters.filter(name=>name === recommendation.name).length,1);
   allRequests.set(`${feature.id}-both-adapters`,both);
@@ -208,4 +212,3 @@ for(const id of ["video-edit","style-transfer"]) {
 }
 console.log(`Workflow checks passed: ${FEATURES.length} features, graph connections, media limits, model pairing, AV assembly and API serialization.`);
 await writeFile(path.join(testDir,"requests.json"),JSON.stringify([...allRequests].map(([id,request])=>({id,request}))));
-

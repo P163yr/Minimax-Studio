@@ -116,7 +116,7 @@ export default function Home() {
   const [aspectRatio, setAspectRatio] = useState("16:9");
   const [megapixels, setMegapixels] = useState(1.032192);
   const [seed, setSeed] = useState(421804992);
-  const [steps, setSteps] = useState(8);
+  const [steps, setSteps] = useState(recommendedSteps(DEFAULT_MODELS.fl2vaLora, "fl2va"));
   const [audio, setAudio] = useState(true);
   const [includeVideoAudio, setIncludeVideoAudio] = useState(true);
   const [lora, setLora] = useState(DEFAULT_MODELS.fl2vaLora);
@@ -207,7 +207,14 @@ export default function Home() {
     try {
       setEndpoint(localStorage.getItem("minimax-studio.endpoint") || "");
       const savedModels: unknown = JSON.parse(localStorage.getItem("minimax-studio.models") || "null");
-      if (record(savedModels)) { setModels(current => Object.fromEntries(Object.entries(current).map(([key, value]) => [key, typeof savedModels[key] === "string" ? savedModels[key] : value])) as ModelSettings); if (typeof savedModels.fl2vaLora === "string") { setLora(savedModels.fl2vaLora); setSteps(recommendedSteps(savedModels.fl2vaLora, "fl2va") ?? 20); } }
+      const restoredModels = Object.fromEntries(Object.entries(DEFAULT_MODELS).map(([key, value]) => [key, record(savedModels) && typeof savedModels[key] === "string" ? savedModels[key] : value])) as ModelSettings;
+      // Apply the requested pDMD preference once for existing installations, then honor later edits.
+      if (localStorage.getItem("minimax-studio.pdmd-default.v1") !== "applied") {
+        restoredModels.fl2vaLora = PDMD_LORA;
+        localStorage.setItem("minimax-studio.models", JSON.stringify(restoredModels));
+        localStorage.setItem("minimax-studio.pdmd-default.v1", "applied");
+      }
+      setModels(restoredModels); setLora(restoredModels.fl2vaLora); setSteps(recommendedSteps(restoredModels.fl2vaLora, "fl2va"));
       const savedHistory: unknown = JSON.parse(localStorage.getItem("minimax-studio.history") || "[]");
       if (Array.isArray(savedHistory)) setHistory(savedHistory.filter(item => record(item) && typeof item.id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(item.id) && typeof item.endpoint === "string" && typeof item.title === "string" && typeof item.status === "string" && typeof item.createdAt === "number").slice(0, 40) as HistoryItem[]);
     } catch { /* Private browsing and unavailable local storage do not block the studio. */ }
@@ -252,7 +259,7 @@ export default function Home() {
     const recommended = getRecommendedFeatureLora(id);
     setFeatureId(id); setPrompt(PROMPTS[id] || ""); setFiles([]); setMediaUrls({}); setCustomRequest(null); setCustomAuthored(false); setCustomName(""); setImportName(""); setEditorImported(false); setCreativeLoras(recommended ? [{ kind: "feature", name: recommended.name, strength: recommended.strength, enabled: true }] : []); setError(""); setView("studio");
     const adapter = next.modelFamily === "ref2va" ? models.ref2vaLora || DEFAULT_MODELS.ref2vaLora : models.fl2vaLora || DEFAULT_MODELS.fl2vaLora;
-    setLora(next.output === "image" ? `${DISABLED_SPEED_PREFIX}${adapter}` : adapter); setSteps(next.output === "image" ? 20 : recommendedSteps(adapter, next.modelFamily) ?? 20);
+    setLora(adapter); setSteps(recommendedSteps(adapter, next.modelFamily));
   }
   function changeLora(value: string) { setLora(value); const suggested = recommendedSteps(value, feature.modelFamily); if (suggested) setSteps(suggested); }
   function toggleSpeedLora() { if (speedEnabled) { setLora(`${DISABLED_SPEED_PREFIX}${speedLora}`); setSteps(20); } else { changeLora(speedLora); } }
@@ -394,4 +401,3 @@ export default function Home() {
     {toast && <div className="toast" role="status"><Check size={16}/>{toast}</div>}
   </div>;
 }
-
