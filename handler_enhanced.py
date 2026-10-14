@@ -476,12 +476,13 @@ def _find_nodes(workflow: dict[str, Any], predicate) -> list[tuple[str, dict[str
     ]
 
 
-def _chain_lora(workflow: dict[str, Any], lora_name: str, strength: float) -> None:
+def _chain_lora(workflow: dict[str, Any], lora_name: str, strength: float | None = None) -> None:
     if not lora_name:
         return
     for node in workflow.values():
         if node.get("class_type") == "LoraLoaderModelOnly" and node.get("inputs", {}).get("lora_name") == lora_name:
-            node["inputs"]["strength_model"] = strength
+            if strength is not None:
+                node["inputs"]["strength_model"] = strength
             return
 
     unets = _find_nodes(workflow, lambda node: node.get("class_type") == "UNETLoader")
@@ -504,7 +505,7 @@ def _chain_lora(workflow: dict[str, Any], lora_name: str, strength: float) -> No
         "inputs": {
             "model": [str(unet_id), 0],
             "lora_name": lora_name,
-            "strength_model": float(strength),
+            "strength_model": 1.0 if strength is None else float(strength),
         },
     }
     for node_id, input_name in consumers:
@@ -512,15 +513,30 @@ def _chain_lora(workflow: dict[str, Any], lora_name: str, strength: float) -> No
             workflow[node_id]["inputs"][input_name] = [new_id, 0]
 
 
-def apply_parameters(workflow: dict[str, Any], params: dict[str, Any]) -> None:
-    prompt = str(params.get("prompt") or "")
+def apply_parameters(workflow: dict[str, Any], params: dict[str, Any] | None) -> None:
+    """Override only declared parameters; imported API graphs keep authored values.
+
+    In particular, an absent parameters object must not reset the random seed,
+    every authored clip length, or export FPS. Duration conversion uses H3's
+    native 24 fps unless the caller explicitly supplies fps as well.
+    """
+    if not isinstance(params, dict) or not params:
+        return
+
+    prompt_requested = "prompt" in params or "prompt_prefix" in params
     prefix = str(params.get("prompt_prefix") or "")
-    final_prompt = ", ".join(part for part in (prefix, prompt) if part)
+    negative_requested = "negative_prompt" in params
     negative = str(params.get("negative_prompt") or "")
-    seed = int(params.get("seed", 0) or 0)
-    fps = int(params.get("fps", 24) or 24)
-    seconds = float(params.get("duration_seconds", 5) or 5)
-    frames = _frames_for_duration(seconds, fps)
+    seed = int(params["seed"]) if "seed" in params else None
+    fps = int(params["fps"]) if "fps" in params else None
+    frames = (
+        _frames_for_duration(float(params["duration_seconds"]), fps if fps is not None else 24)
+        if "duration_seconds" in params else None
+    )
+
+    def final_prompt(authored: str) -> str:
+        prompt = str(params["prompt"] or "") if "prompt" in params else authored
+        return ", ".join(part for part in (prefix, prompt) if part)
 
     for node in workflow.values():
         if not isinstance(node, dict):
@@ -529,37 +545,37 @@ def apply_parameters(workflow: dict[str, Any], params: dict[str, Any]) -> None:
         class_type = str(node.get("class_type") or "")
         title = str(node.get("_meta", {}).get("title") or "").lower()
 
-        if final_prompt and isinstance(inputs.get("prompt"), str):
-            inputs["prompt"] = final_prompt
-        if final_prompt and class_type == "CLIPTextEncode" and isinstance(inputs.get("text"), str) and "negative" not in title:
-            inputs["text"] = final_prompt
-        if negative:
+        if prompt_requested and isinstance(inputs.get("prompt"), str):
+            inputs["prompt"] = final_prompt(inputs["prompt"])
+        if prompt_requested and class_type == "CLIPTextEncode" and isinstance(inputs.get("text"), str) and "negative" not in title:
+            inputs["text"] = final_prompt(inputs["text"])
+        if negative_requested:
             if isinstance(inputs.get("negative_prompt"), str):
                 inputs["negative_prompt"] = negative
             if class_type == "CLIPTextEncode" and isinstance(inputs.get("text"), str) and "negative" in title:
                 inputs["text"] = negative
 
         for key in ("noise_seed", "seed", "random_seed"):
-            if key in inputs and not isinstance(inputs[key], list):
+            if seed is not None and key in inputs and not isinstance(inputs[key], list):
                 inputs[key] = seed
-        if "steps" in inputs and not isinstance(inputs["steps"], list):
-            inputs["steps"] = int(params.get("steps", inputs["steps"]))
-        if "denoise" in inputs and not isinstance(inputs["denoise"], list):
-            inputs["denoise"] = float(params.get("denoise", inputs["denoise"]))
+        if "steps" in params and "steps" in inputs and not isinstance(inputs["steps"], list):
+            inputs["steps"] = int(params["steps"])
+        if "denoise" in params and "denoise" in inputs and not isinstance(inputs["denoise"], list):
+            inputs["denoise"] = float(params["denoise"])
         for key in ("length", "num_frames", "frame_count"):
-            if key in inputs and not isinstance(inputs[key], list):
+            if frames is not None and key in inputs and not isinstance(inputs[key], list):
                 inputs[key] = frames
-        if "fps" in inputs and not isinstance(inputs["fps"], list):
+        if fps is not None and "fps" in inputs and not isinstance(inputs["fps"], list):
             inputs["fps"] = fps
-        if "aspect_ratio" in inputs and not isinstance(inputs["aspect_ratio"], list):
-            inputs["aspect_ratio"] = params.get("aspect_ratio", inputs["aspect_ratio"])
-        if "megapixels" in inputs and not isinstance(inputs["megapixels"], list):
-            inputs["megapixels"] = float(params.get("megapixels", inputs["megapixels"]))
-        if "shift_video" in inputs and not isinstance(inputs["shift_video"], list):
-            inputs["shift_video"] = float(params.get("shift_video", inputs["shift_video"]))
-        if "shift_audio" in inputs and not isinstance(inputs["shift_audio"], list):
-            inputs["shift_audio"] = float(params.get("shift_audio", inputs["shift_audio"]))
-        if params.get("output_prefix") and "filename_prefix" in inputs:
+        if "aspect_ratio" in params and "aspect_ratio" in inputs and not isinstance(inputs["aspect_ratio"], list):
+            inputs["aspect_ratio"] = params["aspect_ratio"]
+        if "megapixels" in params and "megapixels" in inputs and not isinstance(inputs["megapixels"], list):
+            inputs["megapixels"] = float(params["megapixels"])
+        if "shift_video" in params and "shift_video" in inputs and not isinstance(inputs["shift_video"], list):
+            inputs["shift_video"] = float(params["shift_video"])
+        if "shift_audio" in params and "shift_audio" in inputs and not isinstance(inputs["shift_audio"], list):
+            inputs["shift_audio"] = float(params["shift_audio"])
+        if "output_prefix" in params and "filename_prefix" in inputs:
             inputs["filename_prefix"] = str(params["output_prefix"])
         if params.get("base_model") and class_type == "UNETLoader":
             model = str(params["base_model"])
@@ -568,7 +584,7 @@ def apply_parameters(workflow: dict[str, Any], params: dict[str, Any]) -> None:
 
     lora_name = str(params.get("lora_name") or "")
     if lora_name:
-        _chain_lora(workflow, lora_name, float(params.get("lora_strength", 1) or 1))
+        _chain_lora(workflow, lora_name, float(params["lora_strength"]) if "lora_strength" in params else None)
 
 
 def apply_explicit_overrides(workflow: dict[str, Any], overrides: Any) -> None:
@@ -787,3 +803,5 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
 if __name__ == "__main__":
     print("worker-comfyui - Starting enhanced H3 handler...")
     runpod.serverless.start({"handler": handler})
+
+
