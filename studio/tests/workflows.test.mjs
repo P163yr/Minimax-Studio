@@ -6,11 +6,14 @@ import ts from "typescript";
 
 // Keep these tests executable with the bundled Node runtime, without a TS loader.
 const source = await readFile(new URL("../lib/workflows.ts",import.meta.url),"utf8");
-const compiled = ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.ES2022,target:ts.ScriptTarget.ES2022}}).outputText;
+const compiled = ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.ES2022,target:ts.ScriptTarget.ES2022}}).outputText.replace('from "./inventory"','from "./inventory.mjs"');
 const testDir=path.resolve("work/tests");
 await mkdir(testDir,{recursive:true});
 const generatedPath=path.join(testDir,"workflows.mjs");
 await writeFile(generatedPath,compiled);
+const inventorySource=await readFile(new URL("../lib/inventory.ts",import.meta.url),"utf8");
+await writeFile(path.join(testDir,"inventory.mjs"),ts.transpileModule(inventorySource,{compilerOptions:{module:ts.ModuleKind.ES2022,target:ts.ScriptTarget.ES2022}}).outputText);
+const {getRecommendedFeatureLora,getCompatibleFeatureLoras,getFeatureLoraMetadata}=await import(pathToFileURL(path.join(testDir,"inventory.mjs")).href);
 const {buildRequest,FEATURES,DEFAULT_MODELS,PDMD_LORA,PDMD_PROFILE,framesForDuration,dimensionsForRatio,recommendedSteps,getSamplingProfile} = await import(pathToFileURL(generatedPath).href);
 const config = {feature:"text-to-video",prompt:"A kite over a bright seaside, with surf and wind.",duration:5,aspectRatio:"16:9",megapixels:1,seed:757358688076805,steps:8};
 const upload=(role,kind="image",name="reference.png")=>({role,name,mime_type:`${kind}/${kind === "image" ? "png" : kind === "video" ? "mp4" : "wav"}`,data:"dGVzdA==",...(kind === "video" ? {duration:3,hasAudio:true} : kind === "audio" ? {duration:3} : {})});
@@ -92,10 +95,13 @@ assert.equal(recommendedSteps(""),20);
 assert.equal(recommendedSteps(PDMD_LORA),4);
 const stacked=buildRequest({...config,extras:{loras:[{name:"better_motion_h3_lora_v1_500.safetensors",strength:0.8}]}}).input.workflow;
 assert.equal(stacked["1b"].inputs.lora_name,DEFAULT_MODELS.fl2vaLora);
-assert.deepEqual(stacked["lora-1"].inputs.model,["1b",0]);
-assert.deepEqual(stacked["1d"].inputs.model,["lora-1",0]);
+const [stackedExtraId,stackedExtra]=Object.entries(stacked).find(([,node])=>node.class_type === "LoraLoaderModelOnly" && node.inputs.lora_name === "better_motion_h3_lora_v1_500.safetensors");
+assert.deepEqual(stackedExtra.inputs.model,["feature-lora",0]);
+assert.deepEqual(stacked["feature-lora"].inputs.model,["1b",0]);
+assert.deepEqual(stacked["1d"].inputs.model,[stackedExtraId,0]);
 assert.deepEqual(stacked["8"].inputs.model,["1d",0]);
-assert.throws(()=>buildRequest({...config,extras:{loras:[{name:DEFAULT_MODELS.fl2vaLora,strength:1}]}}),/appears twice/);
+const deduplicated=buildRequest({...config,extras:{loras:[{name:DEFAULT_MODELS.fl2vaLora,strength:1}]}}).input.workflow;
+assert.equal(Object.values(deduplicated).filter(node=>node.class_type === "LoraLoaderModelOnly" && node.inputs.lora_name === DEFAULT_MODELS.fl2vaLora).length,1,"duplicate Speed adapter is loaded only once");
 const pdmd=buildRequest({...config,lora:PDMD_LORA,steps:8,extras:{loraStrength:0.75,sampler:"res_multistep",scheduler:"beta",shiftVideo:6,shiftAudio:6,denoise:0.5}});
 assert.equal(pdmd.input.workflow["1b"].inputs.strength_model,1,"pDMD distillation delta always uses strength1");
 assert.equal(pdmd.input.workflow["7"].inputs.sampler_name,"euler");
@@ -164,6 +170,42 @@ assert.throws(()=>buildRequest({...config,model:"minimax_h3_max.safetensors"}),/
 assert.throws(()=>buildRequest({...config,seed:Number.MAX_SAFE_INTEGER+1}),/safe integer/);
 assert.throws(()=>buildRequest({...config,feature:"reference-to-video",model:DEFAULT_MODELS.suggestedRef2va,files:[...Array.from({length:10},()=>upload("reference_image"))]}),/up to 9/);
 assert.throws(()=>buildRequest({...config,feature:"reference-to-video",model:DEFAULT_MODELS.suggestedRef2va,files:[{...upload("reference_audio","audio"),duration:16}]}),/2–15 seconds/);
+
+// Every mode receives its recommended Feature adapter independently of Speed.
+for(const feature of FEATURES) {
+  const recommendation=getRecommendedFeatureLora(feature.id);
+  assert.ok(recommendation,`${feature.id}: documented feature recommendation`);
+  assert.ok(recommendation.sources.length,`${feature.id}: feature recommendation provenance`);
+  assert.ok(recommendation.modelFamily === "any" || recommendation.modelFamily === feature.modelFamily,`${feature.id}: family-compatible recommendation`);
+  const files=feature.media.filter(slot=>slot.required).map(slot=>upload(slot.role,slot.kind));
+  if(feature.id === "reference-to-video") files.push(upload("reference_image"));
+  const speed=feature.modelFamily === "ref2va" ? DEFAULT_MODELS.ref2vaLora : DEFAULT_MODELS.fl2vaLora;
+  const both=buildRequest({...config,feature:feature.id,lora:speed,files});
+  const adapters=Object.values(both.input.workflow).filter(node=>node.class_type === "LoraLoaderModelOnly").map(node=>node.inputs.lora_name);
+  assert.ok(adapters.includes(speed),`${feature.id}: Speed enabled`);
+  assert.ok(adapters.includes(recommendation.name),`${feature.id}: Feature enabled`);
+  assert.equal(adapters.filter(name=>name === recommendation.name).length,1);
+  allRequests.set(`${feature.id}-both-adapters`,both);
+  const disabled=buildRequest({...config,feature:feature.id,lora:speed,files,extras:{featureLora:{name:recommendation.name,strength:recommendation.strength,enabled:false}}});
+  assert.ok(!Object.values(disabled.input.workflow).some(node=>node.class_type === "LoraLoaderModelOnly" && node.inputs.lora_name === recommendation.name),`${feature.id}: Feature disable honored`);
+  const featureOnly=buildRequest({...config,feature:feature.id,lora:"",files});
+  assert.ok(!Object.values(featureOnly.input.workflow).some(node=>node.class_type === "LoraLoaderModelOnly" && node.inputs.lora_name === speed),`${feature.id}: Speed disable honored`);
+}
+assert.ok(!getCompatibleFeatureLoras("ref2va").includes("better_motion_h3_lora_v1_500.safetensors"));
+assert.ok(getCompatibleFeatureLoras("fl2va").includes("h3-realism-people-t2v-i2v-r2v.safetensors"));
+assert.throws(()=>buildRequest({...config,extras:{featureLora:{name:"h3_character_swap_pro4500_1000.safetensors",strength:1,enabled:true}}}),/REF2VA/);
+const cameraOff=buildRequest({...config,feature:"camera-motion",extras:{featureLora:{name:"camera_motion_h3_lora_v1_3000_pruned.safetensors",strength:0.9,enabled:false}}}).input.workflow;
+assert.ok(!cameraOff["6"].inputs.prompt.startsWith("camera motion"),"disabled camera feature does not inject its trigger");
+const cameraOn=buildRequest({...config,feature:"camera-motion"}).input.workflow;
+assert.ok(cameraOn["6"].inputs.prompt.startsWith("camera motion,"),"camera trigger is applied with active Feature adapter");
+for(const id of ["video-edit","style-transfer"]) {
+  const example=allRequests.get(id).input.workflow;
+  assert.equal(example["feature-guide"].class_type,"MiniMaxH3AddGuide");
+  assert.equal(example["feature-guide"].inputs.frame_idx,0);
+  assert.equal(example["6"].inputs["ref_videos.ref_video_0"],undefined,"specialized source is aligned guide rather than loose video reference");
+  assert.deepEqual(example["10"].inputs.conditioning,["feature-guide",0]);
+  assert.ok(example["6"].inputs.prompt.startsWith(getFeatureLoraMetadata(getRecommendedFeatureLora(id).name).trigger));
+}
 console.log(`Workflow checks passed: ${FEATURES.length} features, graph connections, media limits, model pairing, AV assembly and API serialization.`);
 await writeFile(path.join(testDir,"requests.json"),JSON.stringify([...allRequests].map(([id,request])=>({id,request}))));
 

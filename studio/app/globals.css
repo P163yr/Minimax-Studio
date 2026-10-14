@@ -249,6 +249,23 @@ svg.art-symbol { width: 31px; height: 31px; stroke-width: 1.5; }
 .audio-row > div > svg { width: 14px; height: 14px; color: #a591b4; }
 .audio-row strong { font-size: 10px; font-weight: 500; color: #6e647a; }
 .audio-row span:not(.switch) { font-size: 8px; color: #aea6b5; }
+.adapter-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 10px; min-width: 0; margin: 1px 0 17px; }
+.adapter-control { min-width: 0; padding: 13px; border: 1px solid #e8e1ef; border-radius: 9px; background: linear-gradient(135deg, #fcfaff, #fff 85%); }
+.adapter-control:nth-child(2) { border-color: #e5e8dc; background: linear-gradient(135deg, #fbfcf7, #fff 85%); }
+.adapter-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; margin-bottom: 12px; color: #79658d; }
+.adapter-heading > div, .adapter-heading > span { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.adapter-heading h3, .adapter-heading strong { margin: 0; font-size: 12px; font-weight: 600; line-height: 1.4; letter-spacing: -.1px; }
+.adapter-heading > svg, .adapter-heading > div > svg, .adapter-heading > span > svg { width: 14px; height: 14px; color: #aa91bb; }
+.adapter-control:nth-child(2) .adapter-heading { color: #778365; }
+.adapter-control:nth-child(2) .adapter-heading > svg, .adapter-control:nth-child(2) .adapter-heading > div > svg, .adapter-control:nth-child(2) .adapter-heading > span > svg { color: #a3af8b; }
+.adapter-control .field { gap: 6px; min-width: 0; margin-bottom: 10px; }
+.adapter-control .field > label, .adapter-control .field > span:not(.helper-text) { font-size: 10px; color: #786b83; }
+.adapter-control .field input, .adapter-control .field select { min-height: 32px; max-width: 100%; font-size: 10px; color: #6d5e79; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+.adapter-control .settings-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 0; }
+.adapter-control .helper-text { display: block; color: #95859f; font-size: 9px; line-height: 1.65; margin: 5px 0 0; }
+.adapter-control > .helper-text:last-child { margin-bottom: 0; }
+.adapter-control code { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #ad9ab9; font-size: 8px; line-height: 1.6; }
+.adapter-control .lora-check { font-size: 9px; margin: 8px 0 0; }
 .switch { height: 17px; width: 29px; border-radius: 20px; background: #dfd9e6; position: relative; border: 1px solid #d8d1e1; padding: 0; flex: 0 0 29px; transition: background .2s; }
 .switch::after { content: ""; display: block; position: absolute; left: 2px; top: 2px; width: 11px; height: 11px; background: #fff; border-radius: 50%; box-shadow: 0 1px 2px #42335318; transition: transform .2s; }
 .switch.on { background: #b2bd95; border-color: #b2bd95; }

@@ -1,3 +1,4 @@
+import { getFeatureLoraMetadata, getRecommendedFeatureLora } from "./inventory";
 /** API prompts verified against ComfyUI v0.38.2 and the packs installed by Minimax-Studio. */
 export type MediaKind = "image" | "video" | "audio";
 export type ModelFamily = "fl2va" | "ref2va";
@@ -30,6 +31,7 @@ export interface BuildConfig {
     upscaleScale?: number; upscaler?: string;
     lightAzimuth?: number; lightElevation?: number; lightIntensity?: number; lightKelvin?: number;
     attention?: "pytorch attention" | "comfy kitchen attention";
+    featureLora?: {name:string;strength:number;enabled:boolean};
   };
 }
 export interface RunpodRequest { input: { workflow: Workflow; files: MediaFile[]; parameters: {seed:number;duration_seconds:number;fps:24;steps:number} } }
@@ -187,7 +189,14 @@ export function buildRequest(config: BuildConfig): RunpodRequest {
   if(selected.modelFamily === "ref2va" && /fl2v/i.test(model)) throw new Error("This feature requires REF2VA weights. FL2VA weights are for text and keyframe generation.");
   if(selected.modelFamily === "fl2va" && /ref2v/i.test(model)) throw new Error("This feature requires FL2VA weights. REF2VA weights are for reference conditioning.");
   const lora = config.lora ?? (selected.output === "image" ? "" : selected.modelFamily === "fl2va" ? DEFAULT_MODELS.fl2vaLora : DEFAULT_MODELS.ref2vaLora);
-  const loras=[...(lora ? [{name:lora,strength:extras.loraStrength ?? 1}] : []),...(extras.loras || [])];
+  const recommendedFeature=getRecommendedFeatureLora(selected.id);
+  const featureLora=extras.featureLora ?? (recommendedFeature ? {name:recommendedFeature.name,strength:recommendedFeature.strength,enabled:true} : undefined);
+  const featureMetadata=featureLora?.enabled ? getFeatureLoraMetadata(featureLora.name) : null;
+  if(featureLora?.enabled && !featureMetadata) throw new Error("Choose a documented Feature LoRA. Unverified inventory adapters can be added through the optional extra stack.");
+  if(featureMetadata && featureMetadata.modelFamily !== "any" && featureMetadata.modelFamily !== selected.modelFamily) throw new Error(`${featureMetadata.label} requires ${featureMetadata.modelFamily.toUpperCase()} weights and cannot be used with this feature's ${selected.modelFamily.toUpperCase()} model.`);
+  const candidates=[...(lora ? [{name:lora,strength:extras.loraStrength ?? 1,role:"speed"}] : []),...(featureLora?.enabled ? [{name:featureLora.name,strength:featureLora.strength,role:"feature"}] : []),...(extras.loras || []).map(adapter=>({...adapter,role:"extra"}))];
+  // Keep the explicit Feature / Speed selection authoritative if an extra repeats it.
+  const loras=candidates.filter((adapter,index)=>candidates.findIndex(item=>item.name === adapter.name) === index);
   const distillationFiles=new Set([PDMD_LORA,DEFAULT_MODELS.fl2vaLora,DEFAULT_MODELS.ref2vaLora,"minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"]);
   if(new Set(loras.filter(adapter=>distillationFiles.has(adapter.name)).map(adapter=>adapter.name)).size > 1) throw new Error("Use one sampling adapter: pDMD or one Turbo LoRA. Creative adapters may be added separately.");
   const isPdmd=loras.some(adapter=>adapter.name === PDMD_LORA);
@@ -195,7 +204,8 @@ export function buildRequest(config: BuildConfig): RunpodRequest {
   if(isPdmd) for(const adapter of loras) if(adapter.name === PDMD_LORA) adapter.strength=PDMD_PROFILE.loraStrength;
   const sampling=getSamplingProfile(loras.find(adapter=>distillationFiles.has(adapter.name))?.name || lora || "",selected.modelFamily);
   const effectiveSteps=isPdmd ? PDMD_PROFILE.steps : config.steps;
-  if(selected.id === "camera-motion" && !loras.some(item=>item.name === "camera_motion_h3_lora_v1_3000_pruned.safetensors")) loras.push({name:"camera_motion_h3_lora_v1_3000_pruned.safetensors",strength:1});
+  const activeMetadata=loras.map(adapter=>getFeatureLoraMetadata(adapter.name)).filter(item=>item !== null);
+  for(const metadata of activeMetadata) if(metadata.modelFamily !== "any" && metadata.modelFamily !== selected.modelFamily) throw new Error(`${metadata.label} is documented for ${metadata.modelFamily.toUpperCase()}, not ${selected.modelFamily.toUpperCase()}.`);
   const loadedLoras=new Set<string>();
   for(const adapter of loras) {
     safetensors(adapter.name,"LoRA");
@@ -209,6 +219,15 @@ export function buildRequest(config: BuildConfig): RunpodRequest {
   const files = canonicalFiles(config.files || [],selected);
   // Reject unknown roles before canonicalFiles orders them; do not silently drop uploads.
   if(files.length !== (config.files || []).length) throw new Error("One or more uploaded files use a role that this feature does not accept.");
+  const usesAlignedGuide=activeMetadata.some(metadata=>metadata.sourceGuide);
+  const sourceGuideFile=usesAlignedGuide ? files.find(file=>file.role === "source_video") || files.find(file=>file.role === "reference_video") : undefined;
+  if(usesAlignedGuide && !sourceGuideFile) throw new Error("This Feature LoRA requires a source video for its frame-aligned guide workflow.");
+  const length = framesForDuration(selected.id === "extend-video" ? config.duration + 39/24 : config.duration);
+  let finalPrompt=config.prompt.trim();
+  const triggers=[...new Set(activeMetadata.map(metadata=>metadata.trigger).filter((trigger):trigger is string=>Boolean(trigger)))];
+  // Task triggers come before optional visual-style triggers when adapters are stacked.
+  triggers.sort((a,b)=>Number(a === "r34l1sm") - Number(b === "r34l1sm"));
+  for(const trigger of [...triggers].reverse()) if(!finalPrompt.toLowerCase().startsWith(trigger.toLowerCase())) finalPrompt=`${trigger}${trigger.endsWith(":") ? " " : ", "}${finalPrompt}`;
   const {width,height} = dimensionsForRatio(config.aspectRatio,config.megapixels);
   const workflow: Workflow = {};
   const add = (id: string,class_type: string,inputs: Record<string,unknown>,title?: string): WorkflowLink => {
@@ -218,7 +237,7 @@ export function buildRequest(config: BuildConfig): RunpodRequest {
   const clip = add("2","CLIPLoader",{clip_name:safetensors(config.clip || DEFAULT_MODELS.clip,"Text encoder"),type:"minimax",device:"default"});
   const videoVae = add("3","VAELoader",{vae_name:safetensors(config.videoVae || DEFAULT_MODELS.videoVae,"Video VAE")});
   const audioVae = add("4","VAELoader",{vae_name:safetensors(config.audioVae || DEFAULT_MODELS.audioVae,"Audio VAE")});
-  for(let i=0;i<loras.length;i++) activeModel = add(i === 0 ? "1b" : `lora-${i}`,"LoraLoaderModelOnly",{model:activeModel,lora_name:loras[i].name,strength_model:loras[i].strength});
+  for(let i=0;i<loras.length;i++) activeModel = add(loras[i].role === "speed" ? "1b" : loras[i].role === "feature" ? "feature-lora" : `lora-${i}`,"LoraLoaderModelOnly",{model:activeModel,lora_name:loras[i].name,strength_model:loras[i].strength});
   if(isPdmd || sampling.id !== "base" || extras.shiftVideo !== undefined || extras.shiftAudio !== undefined) activeModel = add("1d","MiniMaxH3SigmaShift",{model:activeModel,shift_video:isPdmd ? PDMD_PROFILE.shiftVideo : extras.shiftVideo ?? sampling.shiftVideo,shift_audio:isPdmd ? PDMD_PROFILE.shiftAudio : extras.shiftAudio ?? sampling.shiftAudio});
   if(isPdmd || extras.attention) activeModel=add("1c","ModelAttentionBackend",{model:activeModel,attention:extras.attention || PDMD_PROFILE.attention});
   const byRole = (role:string) => files.filter(f=>f.role===role);
@@ -230,7 +249,7 @@ export function buildRequest(config: BuildConfig): RunpodRequest {
     const title = file.role === "source_image" ? "source image" : file.role.replace(/_/g," ");
     if(kind === "image") fileLinks.set(file,add(id,"LoadImage",{image:file.name},title));
     else if(kind === "audio") fileLinks.set(file,add(id,"LoadAudio",{audio:file.name},title));
-    else fileLinks.set(file,add(id,"VHS_LoadVideo",{video:file.name,force_rate:24,custom_width:0,custom_height:0,frame_load_cap:selected.id === "extend-video" ? 0 : 360,skip_first_frames:0,select_every_nth:1,format:selected.id === "extend-video" ? "None" : "H3"},title));
+    else fileLinks.set(file,add(id,"VHS_LoadVideo",{video:file.name,force_rate:24,custom_width:0,custom_height:0,frame_load_cap:selected.id === "extend-video" ? 0 : file === sourceGuideFile ? Math.min(length,360) : 360,skip_first_frames:0,select_every_nth:1,format:selected.id === "extend-video" ? "None" : "H3"},title));
   }
   const firstLink = (role:string): WorkflowLink | undefined => byRole(role)[0] ? fileLinks.get(byRole(role)[0]) : undefined;
   const videoAudio = (file:MediaFile): WorkflowLink => [fileLinks.get(file)![0],2];
@@ -240,30 +259,30 @@ export function buildRequest(config: BuildConfig): RunpodRequest {
     const patch=add("control-model","ModelPatchLoader",{name:"minimax_h3_fun_controlnet_union_2.0_pruned_int8_convrot.safetensors"});
     activeModel=add("control-apply","MiniMaxH3FunControlNetApply",{model:activeModel,model_patch:patch,vae:videoVae,strength,start_percent:0,end_percent:1,control_video:firstLink("control_video")});
   }
-  const length = framesForDuration(selected.id === "extend-video" ? config.duration + 39/24 : config.duration);
   let conditioning: WorkflowLink;
   let latent: WorkflowLink;
   if(selected.output === "image") {
     const role = selected.id === "character-sheet" ? "generate | native Picture 1 (REF2VA)" : "edit | strong scene anchor (FL2VA)";
-    const encoderInputs: Record<string,unknown> = {clip,vae:videoVae,source_image:firstLink("source_image"),prompt:config.prompt,primary_image_role:role,reference_mode:"semantic (Qwen only)",width,height,source_fit:"crop center",prompt_mode:selected.id === "scene-coverage" ? "directed | frozen scene coverage" : "edit instruction",semantic_resolution:1024,native_reference_size:"match output area",quality_profile:selected.id === "character-sheet" ? "character sheet | 6 panels / 124-frame orbit" : selected.id === "scene-coverage" ? "scene coverage | 124-frame camera path" : "recommended | 5-frame context -> 1 image"};
+    const encoderInputs: Record<string,unknown> = {clip,vae:videoVae,source_image:firstLink("source_image"),prompt:finalPrompt,primary_image_role:role,reference_mode:"semantic (Qwen only)",width,height,source_fit:"crop center",prompt_mode:selected.id === "scene-coverage" ? "directed | frozen scene coverage" : "edit instruction",semantic_resolution:1024,native_reference_size:"match output area",quality_profile:selected.id === "character-sheet" ? "character sheet | 6 panels / 124-frame orbit" : selected.id === "scene-coverage" ? "scene coverage | 124-frame camera path" : "recommended | 5-frame context -> 1 image"};
     if(firstLink("reference_image")) encoderInputs.reference_image=firstLink("reference_image");
     if(selected.id === "scene-coverage") Object.assign(encoderInputs,{coverage_views:12,coverage_arc_degrees:360,coverage_direction:"clockwise / camera right",coverage_hold_frames:5,coverage_loop_closure:true});
     if(selected.id === "relight") {
       const azimuth=extras.lightAzimuth ?? 45,elevation=extras.lightElevation ?? 35,intensity=extras.lightIntensity ?? 60,kelvin=extras.lightKelvin ?? 5600;
       if(!Number.isFinite(azimuth)||azimuth < -180||azimuth > 180||!Number.isFinite(elevation)||elevation < -90||elevation > 90||!Number.isFinite(intensity)||intensity < 10||intensity > 100||!Number.isInteger(kelvin)||kelvin < 1000||kelvin > 10000) throw new Error("Lighting needs azimuth -180–180, elevation -90–90, intensity 10–100 and Kelvin 1,000–10,000.");
-      const relight=add("relight","H3RelightEditor",{lighting:JSON.stringify({version:1,preset:null,lights:[{type:"rectAreaLight",intensity,azimuth,elevation,colorMode:"kelvin",color:"#ffffff",kelvin}],background:"default",effect:"default"}),runtime_task:"directed | 39-frame settle",instruction:config.prompt,image:firstLink("source_image"),subject:"auto",relight_strength:"balanced",light_reference:"semantic sphere (Picture 2)",ball_style:"sphere (MiniMax)"});
+      const relight=add("relight","H3RelightEditor",{lighting:JSON.stringify({version:1,preset:null,lights:[{type:"rectAreaLight",intensity,azimuth,elevation,colorMode:"kelvin",color:"#ffffff",kelvin}],background:"default",effect:"default"}),runtime_task:"directed | 39-frame settle",instruction:finalPrompt,image:firstLink("source_image"),subject:"auto",relight_strength:"balanced",light_reference:"semantic sphere (Picture 2)",ball_style:"sphere (MiniMax)"});
       Object.assign(encoderInputs,{compiled_prompt:relight,options:["relight",1],reference_image:["relight",2],quality_profile:"directed change | 39-frame settle -> 1 image"});
     }
     conditioning=add("6","TextEncodeH3Edit",encoderInputs); latent=["6",1];
   } else if(selected.modelFamily === "ref2va") {
-    const inputs: Record<string,unknown> = {clip,vae:videoVae,audio_vae:audioVae,prompt:config.prompt,width,height,length,ref_image_size:extras.refImageSize || "match"};
+    const inputs: Record<string,unknown> = {clip,vae:videoVae,audio_vae:audioVae,prompt:finalPrompt,width,height,length,ref_image_size:extras.refImageSize || "match"};
     byRole("reference_image").forEach((f,i)=>inputs[`ref_images.ref_image_${i}`]=fileLinks.get(f));
-    const videos = [...byRole("source_video"),...byRole("reference_video")];
+    const videos = [...byRole("source_video"),...byRole("reference_video")].filter(file=>file !== sourceGuideFile);
     videos.forEach((f,i)=>{inputs[`ref_videos.ref_video_${i}`]=fileLinks.get(f);if(extras.includeVideoAudio && f.hasAudio !== false) inputs[`ref_video_audios.ref_video_audio_${i}`]=videoAudio(f);});
     byRole("reference_audio").forEach((f,i)=>inputs[`ref_audios.ref_audio_${i}`]=fileLinks.get(f));
     conditioning=add("6","MiniMaxH3ReferenceToVideo",inputs); latent=["6",1];
+    if(sourceGuideFile) conditioning=add("feature-guide","MiniMaxH3AddGuide",{positive:conditioning,latent,vae:videoVae,image:fileLinks.get(sourceGuideFile),frame_idx:0,...(extras.includeVideoAudio && sourceGuideFile.hasAudio !== false ? {audio_vae:audioVae,audio:videoAudio(sourceGuideFile)} : {})});
   } else {
-    const inputs: Record<string,unknown> = {clip,vae:videoVae,prompt:config.prompt,width,height,length};
+    const inputs: Record<string,unknown> = {clip,vae:videoVae,prompt:finalPrompt,width,height,length};
     if(firstLink("first_frame")) inputs.first_frame=firstLink("first_frame");
     if(firstLink("last_frame")) inputs.last_frame=firstLink("last_frame");
     conditioning=add("6","MiniMaxH3ImageToVideo",inputs);latent=["6",1];
